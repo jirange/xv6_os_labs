@@ -13,6 +13,311 @@ index cac799d..5571e92 100644
  
  
  ifeq ($(LAB),syscall)
+diff --git a/commit.patch b/commit.patch
+new file mode 100644
+index 0000000..8bc11da
+--- /dev/null
++++ b/commit.patch
+@@ -0,0 +1,299 @@
++diff --git a/Makefile b/Makefile
++index cac799d..5571e92 100644
++--- a/Makefile
+++++ b/Makefile
++@@ -154,6 +154,10 @@ UPROGS=\
++ 	$U/_grind\
++ 	$U/_wc\
++ 	$U/_zombie\
+++	$U/_sleep\
+++	$U/_pingpong\
+++	$U/_find\
+++
++ 
++ 
++ ifeq ($(LAB),syscall)
++diff --git a/kernel/main.c b/kernel/main.c
++index 8a3dc2e..174e065 100644
++--- a/kernel/main.c
+++++ b/kernel/main.c
++@@ -9,9 +9,8 @@ volatile static int started = 0;
++ // start() jumps here in supervisor mode on all CPUs.
++ void main() {
++   if (cpuid() == 0) {
++-    // consoleinit();
++-    // printfinit();
++-    printf("\n");
+++    printf("[210110428] enter main, init kernel\n");    // consoleinit();
+++    printf("\n");    // printfinit();
++     printf("xv6 kernel is booting\n");
++     printf("\n");
++     kinit();             // physical page allocator
++diff --git a/kernel/proc.c b/kernel/proc.c
++index 1607145..2139c19 100644
++--- a/kernel/proc.c
+++++ b/kernel/proc.c
++@@ -183,6 +183,7 @@ uchar initcode[] = {0x17, 0x05, 0x00, 0x00, 0x13, 0x05, 0x45, 0x02, 0x97, 0x05,
++ 
++ // Set up first user process.
++ void userinit(void) {
+++  printf("[210110428] enter userinit\n");
++   struct proc *p;
++ 
++   p = allocproc();
++@@ -197,6 +198,7 @@ void userinit(void) {
++   p->trapframe->epc = 0;      // user program counter
++   p->trapframe->sp = PGSIZE;  // user stack pointer
++ 
+++  printf("[210110428] copy initcode to first user process\n");
++   safestrcpy(p->name, "initcode", sizeof(p->name));
++   p->cwd = namei("/");
++ 
++diff --git a/kernel/start.c b/kernel/start.c
++index f704fee..26016fd 100644
++--- a/kernel/start.c
+++++ b/kernel/start.c
++@@ -52,6 +52,7 @@ void start() {
++     // init uart and printf
++     consoleinit();
++     printfinit();
+++    printf("[210110428] in start, init driver, interrupts and change mode\n");
++   }
++ 
++   // switch to supervisor mode and jump to main().
++diff --git a/user/find.c b/user/find.c
++new file mode 100644
++index 0000000..5ae4e4e
++--- /dev/null
+++++ b/user/find.c
++@@ -0,0 +1,108 @@
+++/*a) 可查看user/ls.c以了解如何读取目录；
+++
+++b) 可参照user/ls.c的逻辑实现；
+++
+++c) 使用递归允许find进入到子目录；
+++
+++d) 不要递归进入.和..；
+++
+++e) 测试时需要创建新的文件和文件夹，可使用make clean清理文件系统，并使用make qemu再编译运行。*/
+++
+++#include "kernel/types.h"
+++#include "kernel/stat.h"
+++#include "user/user.h"
+++#include "kernel/fs.h"
+++
+++/*在路径path下的目录树中查找与filename匹配的所有文件，输出文件的相对路径*/
+++
+++char *fmtname(char *path) {
+++  static char buf[DIRSIZ + 1];
+++  char *p;
+++
+++  // Find first character after last slash.
+++  for (p = path + strlen(path); p >= path && *p != '/'; p--)
+++    ;
+++  p++;
+++
+++  // Return blank-padded name.
+++  if (strlen(p) >= DIRSIZ) return p;
+++  memmove(buf, p, strlen(p));
+++  memset(buf + strlen(p), ' ', DIRSIZ - strlen(p));//用buf + strlen(p)中的当前位置的后面DIRSIZ - strlen(p)个字节用空格字符替代
+++  //printf("rr%srr",p);
+++  //return buf;
+++  return p;
+++}
+++
+++void find(char *path, char *file_name) {
+++  char buf[512], *p;
+++  int fd;
+++  struct dirent de;
+++  struct stat st;
+++
+++  if ((fd = open(path, 0)) < 0) {
+++    fprintf(2, "find: cannot open %s\n", path);
+++    return;
+++  }
+++
+++  if (fstat(fd, &st) < 0) {
+++    fprintf(2, "find: cannot stat %s\n", path);
+++    close(fd);
+++    return;
+++  }
+++
+++  switch (st.type) {
+++    case T_FILE:    //如果该文件是文件
+++        if(strcmp(fmtname(path),file_name) == 0){
+++            printf("%s\n", path);
+++        }
+++      break;
+++
+++    case T_DIR:     //如果该文件是目录
+++      if (strlen(path) + 1 + DIRSIZ + 1 > sizeof buf) {
+++        printf("find: path too long\n");
+++        break;
+++      }
+++      strcpy(buf, path);
+++      p = buf + strlen(buf);
+++      *p++ = '/';
+++      while (read(fd, &de, sizeof(de)) == sizeof(de)) {
+++        if (de.inum == 0) continue;
+++        memmove(p, de.name, DIRSIZ);
+++        p[DIRSIZ] = 0;
+++        if (stat(buf, &st) < 0) {
+++          printf("find: cannot stat %s\n", buf);
+++          continue;
+++        }
+++        if(strcmp(fmtname(buf),file_name) == 0){
+++            printf("%s\n", buf);
+++        }else{
+++            //printf("not match%s %s %s %s\n",path,buf,fmtname(buf),file_name);
+++            if (strcmp(fmtname(buf),".")!=0 && strcmp(fmtname(buf),"..")){
+++              find(buf,file_name); //进入子目录查找b  path./a 原来是. 即拼接上
+++            }
+++        }
+++      }
+++      break;
+++  }
+++  close(fd);
+++  //printf("over %d,%d\n",st.type,T_FILE);
+++}
+++
+++int main(int argc,char* argv[]){
+++    //a) 可查看user/ls.c以了解如何读取目录；
+++
+++    //b) 可参照user/ls.c的逻辑实现；
+++
+++    //c) 使用递归允许find进入到子目录；
+++
+++    //d) 不要递归进入.和..；
+++
+++    //e) 测试时需要创建新的文件和文件夹，可使用make clean清理文件系统，并使用make qemu再编译运行。
+++
+++  if (argc != 3) {
+++    printf("The format is incorrect. Please enter the command like:[find path file_name]\n");
+++    exit(-1);
+++  }
+++  find(argv[1],argv[2]);
+++  exit(0);
+++}
++diff --git a/user/init.c b/user/init.c
++index 9ca8790..f1aeb6b 100644
++--- a/user/init.c
+++++ b/user/init.c
++@@ -29,7 +29,8 @@ int main(void) {
++       exit(1);
++     }
++     if (pid == 0) {
++-      exec("sh", argv);
+++      printf("[210110428] start sh through execve\n");
+++      exec("sh", argv);               //start sh-process by fork+exec 2023/9/16
++       printf("init: exec sh failed\n");
++       exit(1);
++     }
++diff --git a/user/pingpong.c b/user/pingpong.c
++new file mode 100644
++index 0000000..46aa098
++--- /dev/null
+++++ b/user/pingpong.c
++@@ -0,0 +1,78 @@
+++/*a) 使用pipe()创建管道，详见实验原理；
+++
+++b) 使用fork()创建子进程，注意根据返回值，判断父子进程；
+++
+++c) 利用read(), write()函数对管道进行读写。
+++
+++d) 请在user/pingpong.c中实现。
+++
+++e) 修改Makefile，将程序添加到UPROGS。*/
+++
+++#include "kernel/types.h"
+++#include "user.h"
+++
+++int main(int argc,char* argv[]){
+++    
+++    //通过文件描述符，程序可以按读写文件的形式读写管道
+++    //int w_len = write(p[1],buffer,n);   //写 buffer的n个字节到文件描述符p[1] 返回n
+++    //int r_len = read(p[0],buffer,n);    //读 n个字节到buffer 返回读出的number 文件结尾eof返回0
+++    
+++    //文件描述符：xv6给文件分配的一个整数的ID 一个内核管理的对象 进程可对这个对象进行读写操作
+++    // 0:stdin 1:stdout 2:stderr
+++
+++    //管道的读取是阻塞的 read会一直等待知道有书库刻度 write会一直等待知道管道不满，有空间可以写入 等待的前提是另一端没有完全关闭
+++    //进程通常支持幽默讴歌管道的一段，使用时需要将另一段关闭
+++
+++    
+++    if(argc != 1){
+++        printf("pingpong don't need arguments!\n");
+++        exit(-1);
+++    }
+++    // a) 使用pipe()创建管道
+++    int p[2];
+++    /*int retp;
+++    //pipe 系统调用创建管道 同时返回两个文件描述符
+++    retp = pipe(p);  //p[0]:管道读出端 p[1]:写入端*/
+++    pipe(p);
+++    int p2[2];
+++    pipe(p2);
+++
+++    // b) 使用fork()创建子进程，注意根据返回值，判断父子进程；
+++/* 子进程读管道，父进程写管道ping */
+++char buffer[10] = "ping";
+++    int n = strlen(buffer);
+++char buffer2[10] = "pong";
+++        int n2 = strlen(buffer);
+++int ret = fork();
+++if (ret == 0) { 
+++    /* 子进程 */
+++    close(p[1]); // 关闭写端
+++    char r_buffer[10];
+++    int r_len = read(p[0],r_buffer,n);
+++    close(p[0]); // 读取完成，关闭读端
+++    printf("%d: received ping\n",getpid());
+++    if(r_len != 0){
+++        close(p2[0]);//提前关闭管道中不使用的一段
+++        write(p2[1],buffer2,n2);
+++        close(p2[1]); // 写入完成，关闭写端
+++    }
+++   // kill(getpid());
+++} else if (ret>0) { 
+++    /* 父进程 */
+++    close(p[0]); // 关闭读端
+++    
+++    write(p[1],buffer,n);
+++    close(p[1]); // 写入完成，关闭写端
+++
+++    char r_buffer[10];
+++    close(p2[1]);
+++    read(p2[0],r_buffer,n2);
+++        //int r_len = read(p[0],r_buffer,n);
+++
+++    close(p2[0]); // 读取完成，关闭读端
+++    printf("%d: received %s\n",getpid(),r_buffer);
+++       // kill(getpid());
+++
+++}
+++    exit(0);
+++}
++diff --git a/user/sleep.c b/user/sleep.c
++new file mode 100644
++index 0000000..69e5ffd
++--- /dev/null
+++++ b/user/sleep.c
++@@ -0,0 +1,17 @@
+++#include "kernel/types.h"
+++#include "user.h"
+++
+++int main(int argc,char* argv[]){
+++    if(argc != 2){
+++        printf("sleep needs one argument!\n");
+++        exit(-1);
+++    }
+++    int ticks = atoi(argv[1]);  //将字符串参数转为整数
+++    sleep(ticks);               //系统调用sleep
+++    printf("(nothing happens for a little while)\n");
+++    exit(0);
+++}
+++
+++/*printf("argc=%d,argv = %s,%s,%s\n",argc,argv[0],argv[1],argv[2]);
+++    printf("argv=%d\n",sizeof(*argv));
+++*/
++\ No newline at end of file
 diff --git a/kernel/main.c b/kernel/main.c
 index 8a3dc2e..174e065 100644
 --- a/kernel/main.c
@@ -63,20 +368,10 @@ index f704fee..26016fd 100644
    // switch to supervisor mode and jump to main().
 diff --git a/user/find.c b/user/find.c
 new file mode 100644
-index 0000000..5ae4e4e
+index 0000000..2e3a6a7
 --- /dev/null
 +++ b/user/find.c
-@@ -0,0 +1,108 @@
-+/*a) 可查看user/ls.c以了解如何读取目录；
-+
-+b) 可参照user/ls.c的逻辑实现；
-+
-+c) 使用递归允许find进入到子目录；
-+
-+d) 不要递归进入.和..；
-+
-+e) 测试时需要创建新的文件和文件夹，可使用make clean清理文件系统，并使用make qemu再编译运行。*/
-+
+@@ -0,0 +1,87 @@
 +#include "kernel/types.h"
 +#include "kernel/stat.h"
 +#include "user/user.h"
@@ -97,7 +392,6 @@ index 0000000..5ae4e4e
 +  if (strlen(p) >= DIRSIZ) return p;
 +  memmove(buf, p, strlen(p));
 +  memset(buf + strlen(p), ' ', DIRSIZ - strlen(p));//用buf + strlen(p)中的当前位置的后面DIRSIZ - strlen(p)个字节用空格字符替代
-+  //printf("rr%srr",p);
 +  //return buf;
 +  return p;
 +}
@@ -145,29 +439,19 @@ index 0000000..5ae4e4e
 +        if(strcmp(fmtname(buf),file_name) == 0){
 +            printf("%s\n", buf);
 +        }else{
-+            //printf("not match%s %s %s %s\n",path,buf,fmtname(buf),file_name);
-+            if (strcmp(fmtname(buf),".")!=0 && strcmp(fmtname(buf),"..")){
-+              find(buf,file_name); //进入子目录查找b  path./a 原来是. 即拼接上
++            if (strcmp(fmtname(buf),".")!=0 && strcmp(fmtname(buf),"..")){    //d) 不要递归进入.和..；
++                //c) 使用递归允许find进入到子目录；
++                find(buf,file_name); //进入子目录查找
 +            }
 +        }
 +      }
 +      break;
 +  }
 +  close(fd);
-+  //printf("over %d,%d\n",st.type,T_FILE);
 +}
 +
 +int main(int argc,char* argv[]){
-+    //a) 可查看user/ls.c以了解如何读取目录；
-+
-+    //b) 可参照user/ls.c的逻辑实现；
-+
-+    //c) 使用递归允许find进入到子目录；
-+
-+    //d) 不要递归进入.和..；
-+
-+    //e) 测试时需要创建新的文件和文件夹，可使用make clean清理文件系统，并使用make qemu再编译运行。
-+
++  //e) 测试时需要创建新的文件和文件夹，可使用make clean清理文件系统，并使用make qemu再编译运行。
 +  if (argc != 3) {
 +    printf("The format is incorrect. Please enter the command like:[find path file_name]\n");
 +    exit(-1);
@@ -191,86 +475,60 @@ index 9ca8790..f1aeb6b 100644
      }
 diff --git a/user/pingpong.c b/user/pingpong.c
 new file mode 100644
-index 0000000..46aa098
+index 0000000..d42c1aa
 --- /dev/null
 +++ b/user/pingpong.c
-@@ -0,0 +1,78 @@
-+/*a) 使用pipe()创建管道，详见实验原理；
-+
-+b) 使用fork()创建子进程，注意根据返回值，判断父子进程；
-+
-+c) 利用read(), write()函数对管道进行读写。
-+
-+d) 请在user/pingpong.c中实现。
-+
-+e) 修改Makefile，将程序添加到UPROGS。*/
-+
+@@ -0,0 +1,52 @@
 +#include "kernel/types.h"
 +#include "user.h"
 +
 +int main(int argc,char* argv[]){
-+    
-+    //通过文件描述符，程序可以按读写文件的形式读写管道
-+    //int w_len = write(p[1],buffer,n);   //写 buffer的n个字节到文件描述符p[1] 返回n
-+    //int r_len = read(p[0],buffer,n);    //读 n个字节到buffer 返回读出的number 文件结尾eof返回0
-+    
-+    //文件描述符：xv6给文件分配的一个整数的ID 一个内核管理的对象 进程可对这个对象进行读写操作
-+    // 0:stdin 1:stdout 2:stderr
 +
-+    //管道的读取是阻塞的 read会一直等待知道有书库刻度 write会一直等待知道管道不满，有空间可以写入 等待的前提是另一端没有完全关闭
-+    //进程通常支持幽默讴歌管道的一段，使用时需要将另一段关闭
-+
-+    
 +    if(argc != 1){
 +        printf("pingpong don't need arguments!\n");
 +        exit(-1);
 +    }
 +    // a) 使用pipe()创建管道
 +    int p[2];
-+    /*int retp;
-+    //pipe 系统调用创建管道 同时返回两个文件描述符
-+    retp = pipe(p);  //p[0]:管道读出端 p[1]:写入端*/
++    //pipe 系统调用创建管道 同时返回两个文件描述符 //p[0]:管道读出端 p[1]:写入端*/
 +    pipe(p);
 +    int p2[2];
 +    pipe(p2);
 +
 +    // b) 使用fork()创建子进程，注意根据返回值，判断父子进程；
-+/* 子进程读管道，父进程写管道ping */
-+char buffer[10] = "ping";
++    /* 子进程读管道，父进程写管道ping */
++    char buffer[10] = "ping";
 +    int n = strlen(buffer);
-+char buffer2[10] = "pong";
++    char buffer2[10] = "pong";
 +        int n2 = strlen(buffer);
-+int ret = fork();
-+if (ret == 0) { 
-+    /* 子进程 */
-+    close(p[1]); // 关闭写端
-+    char r_buffer[10];
-+    int r_len = read(p[0],r_buffer,n);
-+    close(p[0]); // 读取完成，关闭读端
-+    printf("%d: received ping\n",getpid());
-+    if(r_len != 0){
-+        close(p2[0]);//提前关闭管道中不使用的一段
-+        write(p2[1],buffer2,n2);
-+        close(p2[1]); // 写入完成，关闭写端
++    int ret = fork();
++    if (ret == 0) { 
++        /* 子进程 */
++        close(p[1]); // 关闭写端
++        char r_buffer[10];
++        int r_len = read(p[0],r_buffer,n);
++        close(p[0]); // 读取完成，关闭读端
++        printf("%d: received ping\n",getpid());
++        if(r_len != 0){
++            close(p2[0]);//提前关闭管道中不使用的一段
++            write(p2[1],buffer2,n2);
++            close(p2[1]); // 写入完成，关闭写端
++        }
++        // kill(getpid());
++    } else if (ret>0) { 
++        /* 父进程 */
++        close(p[0]); // 关闭读端
++        write(p[1],buffer,n);
++        close(p[1]); // 写入完成，关闭写端
++
++        char r_buffer[10];
++        close(p2[1]);
++        read(p2[0],r_buffer,n2);
++        close(p2[0]); // 读取完成，关闭读端
++        printf("%d: received %s\n",getpid(),r_buffer);
++        // kill(getpid());
++
 +    }
-+   // kill(getpid());
-+} else if (ret>0) { 
-+    /* 父进程 */
-+    close(p[0]); // 关闭读端
-+    
-+    write(p[1],buffer,n);
-+    close(p[1]); // 写入完成，关闭写端
-+
-+    char r_buffer[10];
-+    close(p2[1]);
-+    read(p2[0],r_buffer,n2);
-+        //int r_len = read(p[0],r_buffer,n);
-+
-+    close(p2[0]); // 读取完成，关闭读端
-+    printf("%d: received %s\n",getpid(),r_buffer);
-+       // kill(getpid());
-+
-+}
 +    exit(0);
 +}
 diff --git a/user/sleep.c b/user/sleep.c
