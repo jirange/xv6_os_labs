@@ -29,7 +29,8 @@ int main(void) {
       exit(1);
     }
     if (pid == 0) {
-      exec("sh", argv);
+      printf("[210110428] start sh through execve\n");
+      exec("sh", argv);               //start sh-process by fork+exec 2023/9/16
       printf("init: exec sh failed\n");
       exit(1);
     }
