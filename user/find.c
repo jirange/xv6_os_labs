@@ -1,13 +1,3 @@
-/*a) 可查看user/ls.c以了解如何读取目录；
-
-b) 可参照user/ls.c的逻辑实现；
-
-c) 使用递归允许find进入到子目录；
-
-d) 不要递归进入.和..；
-
-e) 测试时需要创建新的文件和文件夹，可使用make clean清理文件系统，并使用make qemu再编译运行。*/
-
 #include "kernel/types.h"
 #include "kernel/stat.h"
 #include "user/user.h"
@@ -28,7 +18,6 @@ char *fmtname(char *path) {
   if (strlen(p) >= DIRSIZ) return p;
   memmove(buf, p, strlen(p));
   memset(buf + strlen(p), ' ', DIRSIZ - strlen(p));//用buf + strlen(p)中的当前位置的后面DIRSIZ - strlen(p)个字节用空格字符替代
-  //printf("rr%srr",p);
   //return buf;
   return p;
 }
@@ -76,29 +65,19 @@ void find(char *path, char *file_name) {
         if(strcmp(fmtname(buf),file_name) == 0){
             printf("%s\n", buf);
         }else{
-            //printf("not match%s %s %s %s\n",path,buf,fmtname(buf),file_name);
-            if (strcmp(fmtname(buf),".")!=0 && strcmp(fmtname(buf),"..")){
-              find(buf,file_name); //进入子目录查找b  path./a 原来是. 即拼接上
+            if (strcmp(fmtname(buf),".")!=0 && strcmp(fmtname(buf),"..")){    //d) 不要递归进入.和..；
+                //c) 使用递归允许find进入到子目录；
+                find(buf,file_name); //进入子目录查找
             }
         }
       }
       break;
   }
   close(fd);
-  //printf("over %d,%d\n",st.type,T_FILE);
 }
 
 int main(int argc,char* argv[]){
-    //a) 可查看user/ls.c以了解如何读取目录；
-
-    //b) 可参照user/ls.c的逻辑实现；
-
-    //c) 使用递归允许find进入到子目录；
-
-    //d) 不要递归进入.和..；
-
-    //e) 测试时需要创建新的文件和文件夹，可使用make clean清理文件系统，并使用make qemu再编译运行。
-
+  //e) 测试时需要创建新的文件和文件夹，可使用make clean清理文件系统，并使用make qemu再编译运行。
   if (argc != 3) {
     printf("The format is incorrect. Please enter the command like:[find path file_name]\n");
     exit(-1);
