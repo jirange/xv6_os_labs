@@ -41,9 +41,9 @@ void find(char *path, char *file_name) {
 
   switch (st.type) {
     case T_FILE:    //如果该文件是文件
-        if(strcmp(fmtname(path),file_name) == 0){
+        /*if(strcmp(fmtname(path),file_name) == 0){
             printf("%s\n", path);
-        }
+        }*/
       break;
 
     case T_DIR:     //如果该文件是目录
@@ -64,12 +64,12 @@ void find(char *path, char *file_name) {
         }
         if(strcmp(fmtname(buf),file_name) == 0){
             printf("%s\n", buf);
-        }else{
+        }
             if (strcmp(fmtname(buf),".")!=0 && strcmp(fmtname(buf),"..")){    //d) 不要递归进入.和..；
                 //c) 使用递归允许find进入到子目录；
                 find(buf,file_name); //进入子目录查找
             }
-        }
+        
       }
       break;
   }
