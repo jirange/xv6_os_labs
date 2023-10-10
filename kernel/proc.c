@@ -271,6 +271,8 @@ int fork(void) {
 // Caller must hold p->lock.
 void reparent(struct proc *p) {
   struct proc *pp;
+  int num = 0;
+    static char *states[] = {[UNUSED] "unused", [SLEEPING] "sleep ", [RUNNABLE] "runble", [RUNNING] "run   ", [ZOMBIE] "zombie"};
 
   for (pp = proc; pp < &proc[NPROC]; pp++) {
     // this code uses pp->parent without holding pp->lock.
@@ -281,6 +283,8 @@ void reparent(struct proc *p) {
       // pp->parent can't change between the check and the acquire()
       // because only the parent changes it, and we're the parent.
       acquire(&pp->lock);
+      exit_info("proc %d exit, child %d, pid %d, name %s, state %s\n",p->pid,num++,pp->pid,pp->name,states[pp->state]);
+
       pp->parent = initproc;
       // we should wake up init here, but that would require
       // initproc->lock, which would be a deadlock, since we hold
@@ -308,6 +312,7 @@ void exit(int status) {
     }
   }
 
+ 
   begin_op();
   iput(p->cwd);
   end_op();
@@ -330,6 +335,7 @@ void exit(int status) {
   // as anything else.
   acquire(&p->lock);
   struct proc *original_parent = p->parent;
+  
   release(&p->lock);
 
   // we need the parent's lock in order to wake it up from wait().
@@ -337,6 +343,10 @@ void exit(int status) {
   acquire(&original_parent->lock);
 
   acquire(&p->lock);
+static char *states[] = {[UNUSED] "unused", [SLEEPING] "sleep ", [RUNNABLE] "runble", [RUNNING] "run   ", [ZOMBIE] "zombie"};
+
+  exit_info("proc %d exit, parent pid %d, name %s, state %s\n",p->pid,p->parent->pid,p->parent->name,states[p->parent->state]);
+
 
   // Give any children to init.
   reparent(p);
@@ -346,7 +356,7 @@ void exit(int status) {
 
   p->xstate = status;
   p->state = ZOMBIE;
-
+     
   release(&original_parent->lock);
 
   // Jump into the scheduler, never to return.
@@ -356,7 +366,7 @@ void exit(int status) {
 
 // Wait for a child process to exit and return its pid.
 // Return -1 if this process has no children.
-int wait(uint64 addr) {
+int wait(uint64 addr,int flags) {
   struct proc *np;
   int havekids, pid;
   struct proc *p = myproc();
@@ -364,7 +374,6 @@ int wait(uint64 addr) {
   // hold p->lock for the whole time to avoid lost
   // wakeups from a child's exit().
   acquire(&p->lock);
-
   for (;;) {
     // Scan through table looking for exited children.
     havekids = 0;
@@ -399,9 +408,15 @@ int wait(uint64 addr) {
       release(&p->lock);
       return -1;
     }
-
+    if(flags==1){
+      release(&p->lock);
+      return -1;    
+    }else{
     // Wait for a child to exit.
     sleep(p, &p->lock);  // DOC: wait-sleep
+    }
+
+
   }
 }
 
