@@ -1,0 +1,206 @@
+diff --git a/Makefile b/Makefile
+index bf95a78..7011d1b 100644
+--- a/Makefile
++++ b/Makefile
+@@ -161,6 +161,8 @@ UPROGS=\
+ 	$U/_zombie\
+ 	$U/_waittest\
+ 	$U/_exittest\
++	$U/_yieldtest\
++
+ 
+ 
+ ifeq ($(LAB),trap)
+diff --git a/kernel/defs.h b/kernel/defs.h
+index ecea5e6..4426372 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -108,7 +108,7 @@ void            sched(void);
+ void            setproc(struct proc*);
+ void            sleep(void*, struct spinlock*);
+ void            userinit(void);
+-int             wait(uint64);
++int             wait(uint64 addr, int flags);
+ void            wakeup(void*);
+ void            yield(void);
+ int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 1607145..1936970 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -271,6 +271,8 @@ int fork(void) {
+ // Caller must hold p->lock.
+ void reparent(struct proc *p) {
+   struct proc *pp;
++  int num = 0;
++    static char *states[] = {[UNUSED] "unused", [SLEEPING] "sleep ", [RUNNABLE] "runble", [RUNNING] "run   ", [ZOMBIE] "zombie"};
+ 
+   for (pp = proc; pp < &proc[NPROC]; pp++) {
+     // this code uses pp->parent without holding pp->lock.
+@@ -281,6 +283,8 @@ void reparent(struct proc *p) {
+       // pp->parent can't change between the check and the acquire()
+       // because only the parent changes it, and we're the parent.
+       acquire(&pp->lock);
++      exit_info("proc %d exit, child %d, pid %d, name %s, state %s\n",p->pid,num++,pp->pid,pp->name,states[pp->state]);
++
+       pp->parent = initproc;
+       // we should wake up init here, but that would require
+       // initproc->lock, which would be a deadlock, since we hold
+@@ -308,6 +312,7 @@ void exit(int status) {
+     }
+   }
+ 
++ 
+   begin_op();
+   iput(p->cwd);
+   end_op();
+@@ -330,6 +335,7 @@ void exit(int status) {
+   // as anything else.
+   acquire(&p->lock);
+   struct proc *original_parent = p->parent;
++  
+   release(&p->lock);
+ 
+   // we need the parent's lock in order to wake it up from wait().
+@@ -337,6 +343,10 @@ void exit(int status) {
+   acquire(&original_parent->lock);
+ 
+   acquire(&p->lock);
++static char *states[] = {[UNUSED] "unused", [SLEEPING] "sleep ", [RUNNABLE] "runble", [RUNNING] "run   ", [ZOMBIE] "zombie"};
++
++  exit_info("proc %d exit, parent pid %d, name %s, state %s\n",p->pid,p->parent->pid,p->parent->name,states[p->parent->state]);
++
+ 
+   // Give any children to init.
+   reparent(p);
+@@ -346,7 +356,7 @@ void exit(int status) {
+ 
+   p->xstate = status;
+   p->state = ZOMBIE;
+-
++     
+   release(&original_parent->lock);
+ 
+   // Jump into the scheduler, never to return.
+@@ -356,7 +366,7 @@ void exit(int status) {
+ 
+ // Wait for a child process to exit and return its pid.
+ // Return -1 if this process has no children.
+-int wait(uint64 addr) {
++int wait(uint64 addr,int flags) {
+   struct proc *np;
+   int havekids, pid;
+   struct proc *p = myproc();
+@@ -364,7 +374,6 @@ int wait(uint64 addr) {
+   // hold p->lock for the whole time to avoid lost
+   // wakeups from a child's exit().
+   acquire(&p->lock);
+-
+   for (;;) {
+     // Scan through table looking for exited children.
+     havekids = 0;
+@@ -399,9 +408,15 @@ int wait(uint64 addr) {
+       release(&p->lock);
+       return -1;
+     }
+-
++    if(flags==1){
++      release(&p->lock);
++      return -1;    
++    }
+     // Wait for a child to exit.
+     sleep(p, &p->lock);  // DOC: wait-sleep
++    
++
++
+   }
+ }
+ 
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index 4c97875..1aa4176 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -89,6 +89,8 @@ extern uint64 sys_wait(void);
+ extern uint64 sys_write(void);
+ extern uint64 sys_uptime(void);
+ extern uint64 sys_rename(void);
++extern uint64 sys_yield(void);
++
+ 
+ static uint64 (*syscalls[])(void) = {
+     [SYS_fork] sys_fork,   [SYS_exit] sys_exit,     [SYS_wait] sys_wait,     [SYS_pipe] sys_pipe,
+@@ -96,7 +98,7 @@ static uint64 (*syscalls[])(void) = {
+     [SYS_chdir] sys_chdir, [SYS_dup] sys_dup,       [SYS_getpid] sys_getpid, [SYS_sbrk] sys_sbrk,
+     [SYS_sleep] sys_sleep, [SYS_uptime] sys_uptime, [SYS_open] sys_open,     [SYS_write] sys_write,
+     [SYS_mknod] sys_mknod, [SYS_unlink] sys_unlink, [SYS_link] sys_link,     [SYS_mkdir] sys_mkdir,
+-    [SYS_close] sys_close, [SYS_rename] sys_rename,
++    [SYS_close] sys_close, [SYS_rename] sys_rename, [SYS_yield] sys_yield,
+ };
+ 
+ void syscall(void) {
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index 6998f87..52dbf42 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -21,3 +21,4 @@
+ #define SYS_mkdir  20
+ #define SYS_close  21
+ #define SYS_rename 22
++#define SYS_yield  23
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index a69071e..ad870c2 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -18,10 +18,21 @@ uint64 sys_getpid(void) { return myproc()->pid; }
+ 
+ uint64 sys_fork(void) { return fork(); }
+ 
++uint64 sys_yield(void) {
++  uint64 pc;
++  pc = myproc()->trapframe->epc;
++  printf("start to yield, user pc %p\n", pc);
++   yield();
++   return pc; 
++   }
++
+ uint64 sys_wait(void) {
+   uint64 p;
++  int flags;
++
+   if (argaddr(0, &p) < 0) return -1;
+-  return wait(p);
++  if (argint(1, &flags) < 0) return -1;
++  return wait(p,flags);
+ }
+ 
+ uint64 sys_sbrk(void) {
+diff --git a/time.txt b/time.txt
+new file mode 100644
+index 0000000..c793025
+--- /dev/null
++++ b/time.txt
+@@ -0,0 +1 @@
++7
+\ No newline at end of file
+diff --git a/user/user.h b/user/user.h
+index ec47d9d..03a8f71 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -24,6 +24,8 @@ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
+ int rename(const char*);
++int yield(void);
++
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/user/usys.pl b/user/usys.pl
+index 3a2f6c4..2918ba2 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -37,3 +37,4 @@ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
+ entry("rename");
++entry("yield");
