@@ -1,206 +1,581 @@
-diff --git a/Makefile b/Makefile
-index bf95a78..7011d1b 100644
---- a/Makefile
-+++ b/Makefile
-@@ -161,6 +161,8 @@ UPROGS=\
- 	$U/_zombie\
- 	$U/_waittest\
- 	$U/_exittest\
-+	$U/_yieldtest\
-+
- 
- 
- ifeq ($(LAB),trap)
-diff --git a/kernel/defs.h b/kernel/defs.h
-index ecea5e6..4426372 100644
---- a/kernel/defs.h
-+++ b/kernel/defs.h
-@@ -108,7 +108,7 @@ void            sched(void);
- void            setproc(struct proc*);
- void            sleep(void*, struct spinlock*);
- void            userinit(void);
--int             wait(uint64);
-+int             wait(uint64 addr, int flags);
- void            wakeup(void*);
- void            yield(void);
- int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
-diff --git a/kernel/proc.c b/kernel/proc.c
-index 1607145..1936970 100644
---- a/kernel/proc.c
-+++ b/kernel/proc.c
-@@ -271,6 +271,8 @@ int fork(void) {
- // Caller must hold p->lock.
- void reparent(struct proc *p) {
-   struct proc *pp;
-+  int num = 0;
-+    static char *states[] = {[UNUSED] "unused", [SLEEPING] "sleep ", [RUNNABLE] "runble", [RUNNING] "run   ", [ZOMBIE] "zombie"};
- 
-   for (pp = proc; pp < &proc[NPROC]; pp++) {
-     // this code uses pp->parent without holding pp->lock.
-@@ -281,6 +283,8 @@ void reparent(struct proc *p) {
-       // pp->parent can't change between the check and the acquire()
-       // because only the parent changes it, and we're the parent.
-       acquire(&pp->lock);
-+      exit_info("proc %d exit, child %d, pid %d, name %s, state %s\n",p->pid,num++,pp->pid,pp->name,states[pp->state]);
-+
-       pp->parent = initproc;
-       // we should wake up init here, but that would require
-       // initproc->lock, which would be a deadlock, since we hold
-@@ -308,6 +312,7 @@ void exit(int status) {
-     }
-   }
- 
+diff --git a/commit.patch b/commit.patch
+new file mode 100644
+index 0000000..9f8529d
+--- /dev/null
++++ b/commit.patch
+@@ -0,0 +1,206 @@
++diff --git a/Makefile b/Makefile
++index bf95a78..7011d1b 100644
++--- a/Makefile
+++++ b/Makefile
++@@ -161,6 +161,8 @@ UPROGS=\
++ 	$U/_zombie\
++ 	$U/_waittest\
++ 	$U/_exittest\
+++	$U/_yieldtest\
+++
 + 
-   begin_op();
-   iput(p->cwd);
-   end_op();
-@@ -330,6 +335,7 @@ void exit(int status) {
-   // as anything else.
-   acquire(&p->lock);
-   struct proc *original_parent = p->parent;
-+  
-   release(&p->lock);
++ 
++ ifeq ($(LAB),trap)
++diff --git a/kernel/defs.h b/kernel/defs.h
++index ecea5e6..4426372 100644
++--- a/kernel/defs.h
+++++ b/kernel/defs.h
++@@ -108,7 +108,7 @@ void            sched(void);
++ void            setproc(struct proc*);
++ void            sleep(void*, struct spinlock*);
++ void            userinit(void);
++-int             wait(uint64);
+++int             wait(uint64 addr, int flags);
++ void            wakeup(void*);
++ void            yield(void);
++ int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
++diff --git a/kernel/proc.c b/kernel/proc.c
++index 1607145..1936970 100644
++--- a/kernel/proc.c
+++++ b/kernel/proc.c
++@@ -271,6 +271,8 @@ int fork(void) {
++ // Caller must hold p->lock.
++ void reparent(struct proc *p) {
++   struct proc *pp;
+++  int num = 0;
+++    static char *states[] = {[UNUSED] "unused", [SLEEPING] "sleep ", [RUNNABLE] "runble", [RUNNING] "run   ", [ZOMBIE] "zombie"};
++ 
++   for (pp = proc; pp < &proc[NPROC]; pp++) {
++     // this code uses pp->parent without holding pp->lock.
++@@ -281,6 +283,8 @@ void reparent(struct proc *p) {
++       // pp->parent can't change between the check and the acquire()
++       // because only the parent changes it, and we're the parent.
++       acquire(&pp->lock);
+++      exit_info("proc %d exit, child %d, pid %d, name %s, state %s\n",p->pid,num++,pp->pid,pp->name,states[pp->state]);
+++
++       pp->parent = initproc;
++       // we should wake up init here, but that would require
++       // initproc->lock, which would be a deadlock, since we hold
++@@ -308,6 +312,7 @@ void exit(int status) {
++     }
++   }
++ 
+++ 
++   begin_op();
++   iput(p->cwd);
++   end_op();
++@@ -330,6 +335,7 @@ void exit(int status) {
++   // as anything else.
++   acquire(&p->lock);
++   struct proc *original_parent = p->parent;
+++  
++   release(&p->lock);
++ 
++   // we need the parent's lock in order to wake it up from wait().
++@@ -337,6 +343,10 @@ void exit(int status) {
++   acquire(&original_parent->lock);
++ 
++   acquire(&p->lock);
+++static char *states[] = {[UNUSED] "unused", [SLEEPING] "sleep ", [RUNNABLE] "runble", [RUNNING] "run   ", [ZOMBIE] "zombie"};
+++
+++  exit_info("proc %d exit, parent pid %d, name %s, state %s\n",p->pid,p->parent->pid,p->parent->name,states[p->parent->state]);
+++
++ 
++   // Give any children to init.
++   reparent(p);
++@@ -346,7 +356,7 @@ void exit(int status) {
++ 
++   p->xstate = status;
++   p->state = ZOMBIE;
++-
+++     
++   release(&original_parent->lock);
++ 
++   // Jump into the scheduler, never to return.
++@@ -356,7 +366,7 @@ void exit(int status) {
++ 
++ // Wait for a child process to exit and return its pid.
++ // Return -1 if this process has no children.
++-int wait(uint64 addr) {
+++int wait(uint64 addr,int flags) {
++   struct proc *np;
++   int havekids, pid;
++   struct proc *p = myproc();
++@@ -364,7 +374,6 @@ int wait(uint64 addr) {
++   // hold p->lock for the whole time to avoid lost
++   // wakeups from a child's exit().
++   acquire(&p->lock);
++-
++   for (;;) {
++     // Scan through table looking for exited children.
++     havekids = 0;
++@@ -399,9 +408,15 @@ int wait(uint64 addr) {
++       release(&p->lock);
++       return -1;
++     }
++-
+++    if(flags==1){
+++      release(&p->lock);
+++      return -1;    
+++    }
++     // Wait for a child to exit.
++     sleep(p, &p->lock);  // DOC: wait-sleep
+++    
+++
+++
++   }
++ }
++ 
++diff --git a/kernel/syscall.c b/kernel/syscall.c
++index 4c97875..1aa4176 100644
++--- a/kernel/syscall.c
+++++ b/kernel/syscall.c
++@@ -89,6 +89,8 @@ extern uint64 sys_wait(void);
++ extern uint64 sys_write(void);
++ extern uint64 sys_uptime(void);
++ extern uint64 sys_rename(void);
+++extern uint64 sys_yield(void);
+++
++ 
++ static uint64 (*syscalls[])(void) = {
++     [SYS_fork] sys_fork,   [SYS_exit] sys_exit,     [SYS_wait] sys_wait,     [SYS_pipe] sys_pipe,
++@@ -96,7 +98,7 @@ static uint64 (*syscalls[])(void) = {
++     [SYS_chdir] sys_chdir, [SYS_dup] sys_dup,       [SYS_getpid] sys_getpid, [SYS_sbrk] sys_sbrk,
++     [SYS_sleep] sys_sleep, [SYS_uptime] sys_uptime, [SYS_open] sys_open,     [SYS_write] sys_write,
++     [SYS_mknod] sys_mknod, [SYS_unlink] sys_unlink, [SYS_link] sys_link,     [SYS_mkdir] sys_mkdir,
++-    [SYS_close] sys_close, [SYS_rename] sys_rename,
+++    [SYS_close] sys_close, [SYS_rename] sys_rename, [SYS_yield] sys_yield,
++ };
++ 
++ void syscall(void) {
++diff --git a/kernel/syscall.h b/kernel/syscall.h
++index 6998f87..52dbf42 100644
++--- a/kernel/syscall.h
+++++ b/kernel/syscall.h
++@@ -21,3 +21,4 @@
++ #define SYS_mkdir  20
++ #define SYS_close  21
++ #define SYS_rename 22
+++#define SYS_yield  23
++diff --git a/kernel/sysproc.c b/kernel/sysproc.c
++index a69071e..ad870c2 100644
++--- a/kernel/sysproc.c
+++++ b/kernel/sysproc.c
++@@ -18,10 +18,21 @@ uint64 sys_getpid(void) { return myproc()->pid; }
++ 
++ uint64 sys_fork(void) { return fork(); }
++ 
+++uint64 sys_yield(void) {
+++  uint64 pc;
+++  pc = myproc()->trapframe->epc;
+++  printf("start to yield, user pc %p\n", pc);
+++   yield();
+++   return pc; 
+++   }
+++
++ uint64 sys_wait(void) {
++   uint64 p;
+++  int flags;
+++
++   if (argaddr(0, &p) < 0) return -1;
++-  return wait(p);
+++  if (argint(1, &flags) < 0) return -1;
+++  return wait(p,flags);
++ }
++ 
++ uint64 sys_sbrk(void) {
++diff --git a/time.txt b/time.txt
++new file mode 100644
++index 0000000..c793025
++--- /dev/null
+++++ b/time.txt
++@@ -0,0 +1 @@
+++7
++\ No newline at end of file
++diff --git a/user/user.h b/user/user.h
++index ec47d9d..03a8f71 100644
++--- a/user/user.h
+++++ b/user/user.h
++@@ -24,6 +24,8 @@ char* sbrk(int);
++ int sleep(int);
++ int uptime(void);
++ int rename(const char*);
+++int yield(void);
+++
++ 
++ // ulib.c
++ int stat(const char*, struct stat*);
++diff --git a/user/usys.pl b/user/usys.pl
++index 3a2f6c4..2918ba2 100755
++--- a/user/usys.pl
+++++ b/user/usys.pl
++@@ -37,3 +37,4 @@ entry("sbrk");
++ entry("sleep");
++ entry("uptime");
++ entry("rename");
+++entry("yield");
+diff --git a/kernel/bio.c b/kernel/bio.c
+index 60d91a6..c09c7eb 100644
+--- a/kernel/bio.c
++++ b/kernel/bio.c
+@@ -23,14 +23,16 @@
+ #include "fs.h"
+ #include "buf.h"
  
-   // we need the parent's lock in order to wake it up from wait().
-@@ -337,6 +343,10 @@ void exit(int status) {
-   acquire(&original_parent->lock);
- 
-   acquire(&p->lock);
-+static char *states[] = {[UNUSED] "unused", [SLEEPING] "sleep ", [RUNNABLE] "runble", [RUNNING] "run   ", [ZOMBIE] "zombie"};
++# define NBUCKETS 13
++#define HASHFUNC(blockno) (blockno % NBUCKETS) // 哈希函数，根据块号决定哈希桶
++#define NULL ((void*)0)
 +
-+  exit_info("proc %d exit, parent pid %d, name %s, state %s\n",p->pid,p->parent->pid,p->parent->name,states[p->parent->state]);
 +
+ struct {
+-  struct spinlock lock;
++  struct spinlock lock[NBUCKETS];
+   struct buf buf[NBUF];
  
-   // Give any children to init.
-   reparent(p);
-@@ -346,7 +356,7 @@ void exit(int status) {
+-  // Linked list of all buffers, through prev/next.
+-  // Sorted by how recently the buffer was used.
+-  // head.next is most recent, head.prev is least.
+-  struct buf head;
++  struct buf hashbucket[NBUCKETS]; //每个哈希队列一个linked list及一个lock
+ } bcache;
  
-   p->xstate = status;
-   p->state = ZOMBIE;
--
-+     
-   release(&original_parent->lock);
+ void
+@@ -38,17 +40,22 @@ binit(void)
+ {
+   struct buf *b;
  
-   // Jump into the scheduler, never to return.
-@@ -356,7 +366,7 @@ void exit(int status) {
+-  initlock(&bcache.lock, "bcache");
++  for(int i = 0; i < NBUCKETS; i++){
++    initlock(&bcache.lock[i], "bcache");
++    bcache.hashbucket[i].prev = &bcache.hashbucket[i];
++    bcache.hashbucket[i].next = &bcache.hashbucket[i];
++  }
  
- // Wait for a child process to exit and return its pid.
- // Return -1 if this process has no children.
--int wait(uint64 addr) {
-+int wait(uint64 addr,int flags) {
-   struct proc *np;
-   int havekids, pid;
-   struct proc *p = myproc();
-@@ -364,7 +374,6 @@ int wait(uint64 addr) {
-   // hold p->lock for the whole time to avoid lost
-   // wakeups from a child's exit().
-   acquire(&p->lock);
--
-   for (;;) {
-     // Scan through table looking for exited children.
-     havekids = 0;
-@@ -399,9 +408,15 @@ int wait(uint64 addr) {
-       release(&p->lock);
-       return -1;
-     }
--
-+    if(flags==1){
-+      release(&p->lock);
-+      return -1;    
-+    }
-     // Wait for a child to exit.
-     sleep(p, &p->lock);  // DOC: wait-sleep
-+    
-+
-+
+   // Create linked list of buffers
+-  bcache.head.prev = &bcache.head;
+-  bcache.head.next = &bcache.head;
+   for(b = bcache.buf; b < bcache.buf+NBUF; b++){
+-    b->next = bcache.head.next;
+-    b->prev = &bcache.head;
++	int hashIndex =(uint64)b % NBUCKETS;
++    b->next = b->prev = 0;
++	
++	b->next = bcache.hashbucket[hashIndex].next;
++    b->prev = &bcache.hashbucket[hashIndex];
+     initsleeplock(&b->lock, "buffer");
+-    bcache.head.next->prev = b;
+-    bcache.head.next = b;
++   bcache.hashbucket[hashIndex].next->prev = b;
++    bcache.hashbucket[hashIndex].next = b;
    }
  }
  
-diff --git a/kernel/syscall.c b/kernel/syscall.c
-index 4c97875..1aa4176 100644
---- a/kernel/syscall.c
-+++ b/kernel/syscall.c
-@@ -89,6 +89,8 @@ extern uint64 sys_wait(void);
- extern uint64 sys_write(void);
- extern uint64 sys_uptime(void);
- extern uint64 sys_rename(void);
-+extern uint64 sys_yield(void);
-+
+@@ -59,14 +66,16 @@ static struct buf*
+ bget(uint dev, uint blockno)
+ {
+   struct buf *b;
++  int hashIndex = HASHFUNC(blockno);
  
- static uint64 (*syscalls[])(void) = {
-     [SYS_fork] sys_fork,   [SYS_exit] sys_exit,     [SYS_wait] sys_wait,     [SYS_pipe] sys_pipe,
-@@ -96,7 +98,7 @@ static uint64 (*syscalls[])(void) = {
-     [SYS_chdir] sys_chdir, [SYS_dup] sys_dup,       [SYS_getpid] sys_getpid, [SYS_sbrk] sys_sbrk,
-     [SYS_sleep] sys_sleep, [SYS_uptime] sys_uptime, [SYS_open] sys_open,     [SYS_write] sys_write,
-     [SYS_mknod] sys_mknod, [SYS_unlink] sys_unlink, [SYS_link] sys_link,     [SYS_mkdir] sys_mkdir,
--    [SYS_close] sys_close, [SYS_rename] sys_rename,
-+    [SYS_close] sys_close, [SYS_rename] sys_rename, [SYS_yield] sys_yield,
+-  acquire(&bcache.lock);
++  acquire(&bcache.lock[hashIndex]);
+ 
+   // Is the block already cached?
+-  for(b = bcache.head.next; b != &bcache.head; b = b->next){
+-    if(b->dev == dev && b->blockno == blockno){
++  for(b = bcache.hashbucket[hashIndex].next; b != &bcache.hashbucket[hashIndex]; b = b->next){
++  if(b->dev == dev && b->blockno == blockno){
+       b->refcnt++;
+-      release(&bcache.lock);
++      release(&bcache.lock[hashIndex]);
++      //release(&bcache.h[hindex].lock);
+       acquiresleep(&b->lock);
+       return b;
+     }
+@@ -74,15 +83,46 @@ bget(uint dev, uint blockno)
+ 
+   // Not cached.
+   // Recycle the least recently used (LRU) unused buffer.
+-  for(b = bcache.head.prev; b != &bcache.head; b = b->prev){
+-    if(b->refcnt == 0) {
+-      b->dev = dev;
+-      b->blockno = blockno;
+-      b->valid = 0;
+-      b->refcnt = 1;
+-      release(&bcache.lock);
+-      acquiresleep(&b->lock);
+-      return b;
++    for(b = bcache.hashbucket[hashIndex].next; b != &bcache.hashbucket[hashIndex]; b = b->prev){
++      if(b->refcnt == 0) {
++        b->dev = dev;
++        b->blockno = blockno;
++        b->valid = 0;
++        b->refcnt = 1;
++        release(&bcache.lock[hashIndex]);
++        acquiresleep(&b->lock);
++        return b;
++      }
++    }
++ // 本桶里没空闲块了，去别的桶里拿
++  for(int i=0;i<NBUCKETS;++i){
++    if(i!=hashIndex){
++      acquire(&bcache.lock[i]);
++      for(b = bcache.hashbucket[i].prev; b != &bcache.hashbucket[i]; b = b->prev){
++        
++        if(b->refcnt==0){
++          //founded!
++          //把b从原来的里面删掉  双向链表删除结点
++          b->prev->next = b->next;
++          b->next->prev = b->prev;
++
++          //把b插入到这个哈希桶中
++          b->next = bcache.hashbucket[hashIndex].next;
++          b->prev = &bcache.hashbucket[hashIndex];
++          bcache.hashbucket[hashIndex].next->prev = b;
++          bcache.hashbucket[hashIndex].next = b;
++
++          b->dev = dev;
++          b->blockno = blockno;
++          b->valid = 0;
++          b->refcnt = 1;
++          release(&bcache.lock[i]);
++          release(&bcache.lock[hashIndex]);
++          acquiresleep(&b->lock);
++          return b;
++        }  
++      }
++      release(&bcache.lock[i]);
+     }
+   }
+   panic("bget: no buffers");
+@@ -121,33 +161,37 @@ brelse(struct buf *b)
+ 
+   releasesleep(&b->lock);
+ 
+-  acquire(&bcache.lock);
++  int index = HASHFUNC(b->blockno);
++  //acquire(&bcache.lock);
++  acquire(&bcache.lock[index]);
+   b->refcnt--;
+   if (b->refcnt == 0) {
+     // no one is waiting for it.
+     b->next->prev = b->prev;
+     b->prev->next = b->next;
+-    b->next = bcache.head.next;
+-    b->prev = &bcache.head;
+-    bcache.head.next->prev = b;
+-    bcache.head.next = b;
++    b->next = bcache.hashbucket[index].next;
++    b->prev = &bcache.hashbucket[index];
++    bcache.hashbucket[index].next->prev = b;
++    bcache.hashbucket[index].next = b;
+   }
+   
+-  release(&bcache.lock);
++  release(&bcache.lock[index]);
+ }
+ 
+ void
+ bpin(struct buf *b) {
+-  acquire(&bcache.lock);
++  int index = HASHFUNC(b->blockno);
++  acquire(&bcache.lock[index]);
+   b->refcnt++;
+-  release(&bcache.lock);
++  release(&bcache.lock[index]);
+ }
+ 
+ void
+ bunpin(struct buf *b) {
+-  acquire(&bcache.lock);
++  int index = HASHFUNC(b->blockno);
++  acquire(&bcache.lock[index]);
+   b->refcnt--;
+-  release(&bcache.lock);
++  release(&bcache.lock[index]);
+ }
+ 
+ 
+diff --git a/kernel/buf.h b/kernel/buf.h
+index 4616e9e..160452e 100644
+--- a/kernel/buf.h
++++ b/kernel/buf.h
+@@ -8,5 +8,4 @@ struct buf {
+   struct buf *prev; // LRU cache list
+   struct buf *next;
+   uchar data[BSIZE];
+-};
+-
++};
+\ No newline at end of file
+diff --git a/kernel/kalloc.c b/kernel/kalloc.c
+index fa6a0ac..15085a1 100644
+--- a/kernel/kalloc.c
++++ b/kernel/kalloc.c
+@@ -10,6 +10,7 @@
+ #include "defs.h"
+ 
+ void freerange(void *pa_start, void *pa_end);
++void kfree_by_cpu_id(void *pa,int cpu_id);
+ 
+ extern char end[]; // first address after kernel.
+                    // defined by kernel.ld.
+@@ -18,27 +19,53 @@ struct run {
+   struct run *next;
  };
  
- void syscall(void) {
-diff --git a/kernel/syscall.h b/kernel/syscall.h
-index 6998f87..52dbf42 100644
---- a/kernel/syscall.h
-+++ b/kernel/syscall.h
-@@ -21,3 +21,4 @@
- #define SYS_mkdir  20
- #define SYS_close  21
- #define SYS_rename 22
-+#define SYS_yield  23
-diff --git a/kernel/sysproc.c b/kernel/sysproc.c
-index a69071e..ad870c2 100644
---- a/kernel/sysproc.c
-+++ b/kernel/sysproc.c
-@@ -18,10 +18,21 @@ uint64 sys_getpid(void) { return myproc()->pid; }
+-struct {
++struct kmem{
+   struct spinlock lock;
+   struct run *freelist;
+ } kmem;
  
- uint64 sys_fork(void) { return fork(); }
- 
-+uint64 sys_yield(void) {
-+  uint64 pc;
-+  pc = myproc()->trapframe->epc;
-+  printf("start to yield, user pc %p\n", pc);
-+   yield();
-+   return pc; 
-+   }
++struct kmem kmems[NCPU];
 +
- uint64 sys_wait(void) {
-   uint64 p;
-+  int flags;
-+
-   if (argaddr(0, &p) < 0) return -1;
--  return wait(p);
-+  if (argint(1, &flags) < 0) return -1;
-+  return wait(p,flags);
+ void
+ kinit()
+ {
+-  initlock(&kmem.lock, "kmem");
++  for (int cpu = 0; cpu < NCPU; cpu++) {
++      initlock(&kmems[cpu].lock, "kmem");
++  }
+   freerange(end, (void*)PHYSTOP);
  }
  
- uint64 sys_sbrk(void) {
+-void
+-freerange(void *pa_start, void *pa_end)
++
++void freerange(void *pa_start, void *pa_end)
+ {
+-  char *p;
+-  p = (char*)PGROUNDUP((uint64)pa_start);
+-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
+-    kfree(p);
++  char *p = (char*)PGROUNDUP((uint64)pa_start);
++
++  // 把空间均匀连续的分给各个CPU
++  uint64 total_pages = ((uint64)pa_end - (uint64)pa_start) / PGSIZE;
++  uint64 pages_per_cpu = total_pages / NCPU;
++  uint64 extra_pages = total_pages % NCPU;
++
++  for (int cpu = 0; cpu < NCPU; cpu++)
++  {
++    uint64 cpu_pages = pages_per_cpu;
++    if (extra_pages > 0)
++    {
++      cpu_pages++;
++      extra_pages--;
++    }
++
++    char *q = p;
++    for (uint64 i = 0; i < cpu_pages; i++)
++    {
++      kfree_by_cpu_id(q, cpu);
++      q += PGSIZE;
++    }
++
++    p = q;
++  }
+ }
+ 
++
+ // Free the page of physical memory pointed at by v,
+ // which normally should have been returned by a
+ // call to kalloc().  (The exception is when
+@@ -56,12 +83,37 @@ kfree(void *pa)
+ 
+   r = (struct run*)pa;
+ 
+-  acquire(&kmem.lock);
+-  r->next = kmem.freelist;
+-  kmem.freelist = r;
+-  release(&kmem.lock);
++  push_off();
++  struct kmem *kmp = &kmems[cpuid()];
++  pop_off();
++
++  acquire(&kmp->lock);
++  r->next = kmp->freelist;
++  kmp->freelist = r;
++  release(&kmp->lock);
++}
++
++void
++kfree_by_cpu_id(void *pa,int cpu_id)
++{
++  struct run *r;
++  struct kmem *kmp = &kmems[cpu_id];
++
++  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
++    panic("kfree");
++
++  // Fill with junk to catch dangling refs.
++  memset(pa, 1, PGSIZE);
++
++  r = (struct run*)pa;
++
++  acquire(&kmp->lock);
++  r->next = kmp->freelist;
++  kmp->freelist = r;
++  release(&kmp->lock);
+ }
+ 
++
+ // Allocate one 4096-byte page of physical memory.
+ // Returns a pointer that the kernel can use.
+ // Returns 0 if the memory cannot be allocated.
+@@ -69,14 +121,41 @@ void *
+ kalloc(void)
+ {
+   struct run *r;
++  push_off();
++  int cpu_id = cpuid();
++  pop_off();
++  
++  struct kmem *kmp = &kmems[cpu_id];
++  acquire(&kmp->lock);
++  r = kmp->freelist;
++  
++    if(r){
++		kmp->freelist = r->next;
++		release(&kmp->lock);
++		memset((char*)r, 5, PGSIZE); // fill with junk
++		return (void*)r;
++	}
++	else{
++		// Try to steal memory from other CPUs
++		for (int i = 0; i < NCPU; i++)
++		{
++		  if (i == cpu_id) // Skip current CPU
++			continue;
+ 
+-  acquire(&kmem.lock);
+-  r = kmem.freelist;
+-  if(r)
+-    kmem.freelist = r->next;
+-  release(&kmem.lock);
+-
+-  if(r)
+-    memset((char*)r, 5, PGSIZE); // fill with junk
++		  struct kmem *other_kmp = &kmems[i];
++		  acquire(&other_kmp->lock);
++		  r = other_kmp->freelist;
++		  if (r)
++		  {
++			other_kmp->freelist = r->next;
++			release(&other_kmp->lock);
++			memset((char *)r, 5, PGSIZE); // fill with junk
++			release(&kmp->lock);
++			return (void *)r;
++		  }else release(&other_kmp->lock);
++		}
++		release(&kmp->lock);
++		return 0; // No free memory blocks available
++	}
+   return (void*)r;
+-}
++}
+\ No newline at end of file
 diff --git a/time.txt b/time.txt
 new file mode 100644
-index 0000000..c793025
+index 0000000..301160a
 --- /dev/null
 +++ b/time.txt
 @@ -0,0 +1 @@
-+7
++8
 \ No newline at end of file
-diff --git a/user/user.h b/user/user.h
-index ec47d9d..03a8f71 100644
---- a/user/user.h
-+++ b/user/user.h
-@@ -24,6 +24,8 @@ char* sbrk(int);
- int sleep(int);
- int uptime(void);
- int rename(const char*);
-+int yield(void);
-+
- 
- // ulib.c
- int stat(const char*, struct stat*);
-diff --git a/user/usys.pl b/user/usys.pl
-index 3a2f6c4..2918ba2 100755
---- a/user/usys.pl
-+++ b/user/usys.pl
-@@ -37,3 +37,4 @@ entry("sbrk");
- entry("sleep");
- entry("uptime");
- entry("rename");
-+entry("yield");
