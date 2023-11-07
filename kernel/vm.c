@@ -5,8 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
-
-
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -167,7 +167,9 @@ uint64 kvmpa(uint64 va) {
   pte_t *pte;
   uint64 pa;
 
-  pte = walk(kernel_pagetable, va, 0);
+  struct proc *p = myproc();
+  pte = walk(p->k_pagetable, va, 0);   // 重要！！！！！！！！！
+  //pte = walk(kernel_pagetable, va, 0);
   if (pte == 0) panic("kvmpa");// 如果未找到页表项，触发panic
   if ((*pte & PTE_V) == 0) panic("kvmpa");// 如果页表项无效，触发panic
   pa = PTE2PA(*pte);

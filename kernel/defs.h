@@ -183,7 +183,9 @@ int             test_pagetable();
 void            vmprint(pagetable_t);
 pagetable_t     kvminit_ind(void);
 void            kvmmap_ind(pagetable_t, uint64, uint64, uint64, int);
-
+// vmcopyin.c
+int             copyin_new(pagetable_t, char *, uint64, uint64);
+int             copyinstr_new(pagetable_t, char *, uint64, uint64);
 
 // plic.c
 void            plicinit(void);
