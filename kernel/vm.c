@@ -6,6 +6,8 @@
 #include "defs.h"
 #include "fs.h"
 
+
+
 /*
  * the kernel's page table.
  */
@@ -380,67 +382,35 @@ int test_pagetable() {
   return satp != gsatp;
 }
 
-
-/*void 
-printwalk(pagetable_t pgtbl, int level)
+void 
+vmprint_sub(pagetable_t pagetable,uint64 preva,int level)
 {
-  // there are 2^9 = 512 PTEs in a page table.
-  for(int i = 0; i < 512; ++i){
-    pte_t pte = pgtbl[i];
-    if(pte & PTE_V){
+  // 遍历一个页表页的PTE表项 
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i]; //获取第i条PTE 
+      char flags[5];              // xv6 好像不支持%c  
+      flags[0] = (pte & PTE_R) ? 'r' : '-';
+      flags[1] = (pte & PTE_W) ? 'w' : '-';
+      flags[2] = (pte & PTE_X) ? 'x' : '-';
+      flags[3] = (pte & PTE_U) ? 'u' : '-'; 
+
+    /* 判断PTE的Flag位，如果还有下一级页表(即当前是根页表或次页表)，则递归调用 vmprint_sub */
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){ 
+      
+      if (level==2) printf("||   ||idx: %d: pa: %p, flags: %s\n",i,pte,flags);
+      else  printf("||idx: %d: pa: %p, flags: %s\n",i,pte,flags);
       // this PTE points to a lower-level page table.
-      uint64 child = PTE2PA(pte);
-      for(int j = 0; j <= level; ++j){
-        if(j != level)
-          printf("|| ");
-        else
-          printf("||");
-      }
-      printf("%d: pte %p pa %p\n", i, pte, child);
-      if((pte & (PTE_R|PTE_W|PTE_X)) == 0){
-        printwalk((pagetable_t)child, level + 1);
-      }
+      uint64 child = PTE2PA(pte); // 将PTE转为为物理地址
+      vmprint_sub((pagetable_t)child,((uint64)(i)+preva) << 9,level+1); // 递归调用freewalk
+    } else if(pte & PTE_V){
+      printf("||   ||   ||idx: %d: va: %p -> pa: %p, flags: %s\n", i, ((uint64)(i)+preva) << 12, (void*)PTE2PA(pte), flags);
     }
   }
-}*/
-
+}
 
 void 
 vmprint(pagetable_t pagetable)
 {
     printf("page table %p\n", pagetable);
-
-    vmprint_sub(pagetable);
-}
-
-void 
-vmprint_sub(pagetable_t pagetable)
-{
-  // there are 2^9 = 512 PTEs in a page table.
-  // 遍历一个页表页的PTE表项 
-  for(int i = 0; i < 512; i++){
-    pte_t pte = pagetable[i]; //获取第i条PTE 
-    
-
-    /* 判断PTE的Flag位，如果还有下一级页表(即当前是根页表或次页表)，
-       则递归调用freewalk释放页表项，并将对应的PTE清零 */
-    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){ 
-      //printf("idx: %d: pa: %p, flags:%s\n",i,pte,);
-      printf("idx: %d: pa: %p, \n",i,pte);
-
-      // this PTE points to a lower-level page table.
-      uint64 child = PTE2PA(pte); // 将PTE转为为物理地址
-      vmprint_sub((pagetable_t)child); // 递归调用freewalk
-      pagetable[i] = 0; // 清零
-    } else if(pte & PTE_V){
-      printf("idx: %d: va: [虚拟地址] -> pa: %p, \n",i,pte); 
-
-      /* 如果叶子页表的虚拟地址还有映射到物理地址，报错panic。
-         因为调用freewalk之前应该会先uvmunmap释放物理内存 */    
-      panic("vmprint_sub: leaf"); 
-    }
-  }
-  kfree((void*)pagetable); // 释放pagetable指向的物理页
-
-  //printwalk(pgtbl, 0);
+    vmprint_sub(pagetable,0,1);
 }
