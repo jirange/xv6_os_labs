@@ -137,27 +137,17 @@ found:
 */
 void freeproc_pagetable_without_frame(pagetable_t pagetable){
     // there are 2^9 = 512 PTEs in a page table.
-  for(int i = 0; i < 512; ++i){
-    pte_t pte = pagetable[i];
-    if(pte & PTE_V){
-      pagetable[i] = 0;
-      if ((pte & (PTE_R|PTE_W|PTE_X)) == 0){
-        uint64 child = PTE2PA(pte);
-        freeproc_pagetable_without_frame((pagetable_t)child);
-      }
-    }
-  }
-  /*for (int i = 0; i < 512; i++) {
+  for (int i = 0; i < 512; i++) {
     pte_t pte = pagetable[i];
     if ((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0) {
       // this PTE points to a lower-level page table.
       uint64 child = PTE2PA(pte);
       freeproc_pagetable_without_frame((pagetable_t)child);
-      pagetable[i] = 0;               // ？？？？？??????
+      pagetable[i] = 0;              
     } else if (pte & PTE_V) {
-      panic("freeproc_pagetable_without_frame: leaf");
+      pagetable[i] = 0;
     }
-  }*/
+  }
   kfree((void *)pagetable);
 }
 
@@ -240,6 +230,8 @@ void userinit(void) {
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
+  // 第一个进程也需要将用户页表映射到内核页表中
+  sync_pagetable(p->pagetable, p->k_pagetable, 0, p->sz);
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -264,10 +256,15 @@ int growproc(int n) {
     if ((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+      //每一次用户页表被修改了映射的同时，都要修改对应独立内核页表的相应部分保持同步
+    sync_pagetable(p->pagetable, p->k_pagetable, p->sz, sz);  
   } else if (n < 0) {
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+    sync_pagetable(p->pagetable, p->k_pagetable, sz, p->sz); 
   }
   p->sz = sz;
+
+
   return 0;
 }
 
@@ -290,6 +287,8 @@ int fork(void) {
     return -1;
   }
   np->sz = p->sz;
+
+  sync_pagetable(np->pagetable, np->k_pagetable, 0, np->sz);
 
   np->parent = p;
 

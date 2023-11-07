@@ -5,8 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
-#include "spinlock.h"
 #include "proc.h"
+#include "spinlock.h"
 
 /*
  * the kernel's page table.
@@ -372,8 +372,10 @@ int copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len) {
 // Copy len bytes to dst from virtual address srcva in a given page table.
 // Return 0 on success, -1 on error.
 int copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len) {
-  uint64 n, va0, pa0;
-
+  
+  //直接在copyin()里调用函数 copyin_new()
+  //删除copyin()原来的实现方案
+  /*uint64 n, va0, pa0;
   while (len > 0) {
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
@@ -386,7 +388,15 @@ int copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len) {
     dst += n;
     srcva = va0 + PGSIZE;
   }
-  return 0;
+  return 0;*/
+  //Step 3 ：在独立内核页表加上用户页表的映射，
+  //以保证刚刚替换地新函数能够使用。
+  //注意独立内核页表的用户页表的映射的标志位的选择。
+  //标志位User一旦被设置，内核就不能访问该虚拟地址了
+  w_sstatus(r_sstatus() | SSTATUS_SUM);//修改sstatus寄存器的SUM位
+  int a = copyin_new(pagetable, dst, srcva, len);
+  w_sstatus(r_sstatus() & ~SSTATUS_SUM);//去掉sstatus寄存器的SUM位
+  return a;
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -394,7 +404,12 @@ int copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len) {
 // until a '\0', or max.
 // Return 0 on success, -1 on error.
 int copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max) {
-  uint64 n, va0, pa0;
+  w_sstatus(r_sstatus() | SSTATUS_SUM);
+  int a = copyinstr_new(pagetable, dst, srcva, max);
+  w_sstatus(r_sstatus() & ~SSTATUS_SUM);
+  return a;
+
+  /*uint64 n, va0, pa0;
   int got_null = 0;
 
   while (got_null == 0 && max > 0) {
@@ -425,7 +440,7 @@ int copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max) {
     return 0;
   } else {
     return -1;
-  }
+  }*/
 }
 
 // check if use global kpgtbl or not
@@ -455,7 +470,7 @@ vmprint_sub(pagetable_t pagetable,uint64 preva,int level)
       else  printf("||idx: %d: pa: %p, flags: %s\n",i,pte,flags);
       // this PTE points to a lower-level page table.
       uint64 child = PTE2PA(pte); // 将PTE转为为物理地址
-      vmprint_sub((pagetable_t)child,((uint64)(i)+preva) << 9,level+1); // 递归调用freewalk
+      vmprint_sub((pagetable_t)child,((uint64)(i)+preva) << 9,level+1); // 递归调用
     } else if(pte & PTE_V){
       printf("||   ||   ||idx: %d: va: %p -> pa: %p, flags: %s\n", i, ((uint64)(i)+preva) << 12, (void*)PTE2PA(pte), flags);
     }
@@ -468,3 +483,22 @@ vmprint(pagetable_t pagetable)
     printf("page table %p\n", pagetable);
     vmprint_sub(pagetable,0,1);
 }
+
+
+//   sync_pagetable(p->pagetable, p->k_pagetable, 0, p->sz);  // 基本都是这么调用的
+// 把进程的用户页表映射到内核页表
+
+void sync_pagetable(pagetable_t upgtbl, pagetable_t kpgtbl, uint64 start, uint64 end)
+{
+  //walk 函数，用于在页表 pagetable 中查找虚拟地址 va 对应的页表项（PTE），并且在需要时创建必要的页表页面。pte_t *walk(pagetable_t pagetable, uint64 va, int alloc)
+  for (uint64 va = start; va < end; va += PGSIZE) {
+    pte_t *pte = walk(upgtbl, va, 0);
+    if (pte != 0 && (*pte & PTE_V)) {
+      pte_t *kpte = walk(kpgtbl, va, 1);
+      *kpte = *pte; 
+    }
+  }
+}
+
+
+
