@@ -1,0 +1,91 @@
+diff --git a/kernel/defs.h b/kernel/defs.h
+index 59f7aae..bd02098 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -179,6 +179,8 @@ int             copyout(pagetable_t, uint64, char *, uint64);
+ int             copyin(pagetable_t, char *, uint64, uint64);
+ int             copyinstr(pagetable_t, char *, uint64, uint64);
+ int             test_pagetable();
++void            vmprint(pagetable_t);
++
+ 
+ // plic.c
+ void            plicinit(void);
+diff --git a/kernel/exec.c b/kernel/exec.c
+index 7b8a524..747b1c5 100644
+--- a/kernel/exec.c
++++ b/kernel/exec.c
+@@ -97,6 +97,8 @@ int exec(char *path, char **argv) {
+   p->trapframe->sp = sp;          // initial stack pointer
+   proc_freepagetable(oldpagetable, oldsz);
+ 
++  if(p->pid==1)
++    vmprint(p->pagetable);
+   return argc;  // this ends up in a0, the first argument to main(argc, argv)
+ 
+ bad:
+diff --git a/kernel/proc.h b/kernel/proc.h
+index 9c16ea7..0fefff5 100644
+--- a/kernel/proc.h
++++ b/kernel/proc.h
+@@ -103,4 +103,7 @@ struct proc {
+   struct file *ofile[NOFILE];  // Open files
+   struct inode *cwd;           // Current directory
+   char name[16];               // Process name (debugging)
++
++  pagetable_t k_pagetable;     // 内核独立页表
++  uint64 kstack_pa;            // 内核栈的物理地址
+ };
+diff --git a/kernel/vm.c b/kernel/vm.c
+index b794885..21ac872 100644
+--- a/kernel/vm.c
++++ b/kernel/vm.c
+@@ -6,6 +6,8 @@
+ #include "defs.h"
+ #include "fs.h"
+ 
++
++
+ /*
+  * the kernel's page table.
+  */
+@@ -378,4 +380,37 @@ int test_pagetable() {
+   uint64 gsatp = MAKE_SATP(kernel_pagetable);
+   printf("test_pagetable: %d\n", satp != gsatp);
+   return satp != gsatp;
+-}
+\ No newline at end of file
++}
++
++void 
++vmprint_sub(pagetable_t pagetable,uint64 preva,int level)
++{
++  // 遍历一个页表页的PTE表项 
++  for(int i = 0; i < 512; i++){
++    pte_t pte = pagetable[i]; //获取第i条PTE 
++      char flags[5];              // xv6 好像不支持%c  
++      flags[0] = (pte & PTE_R) ? 'r' : '-';
++      flags[1] = (pte & PTE_W) ? 'w' : '-';
++      flags[2] = (pte & PTE_X) ? 'x' : '-';
++      flags[3] = (pte & PTE_U) ? 'u' : '-'; 
++
++    /* 判断PTE的Flag位，如果还有下一级页表(即当前是根页表或次页表)，则递归调用 vmprint_sub */
++    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){ 
++      
++      if (level==2) printf("||   ||idx: %d: pa: %p, flags: %s\n",i,pte,flags);
++      else  printf("||idx: %d: pa: %p, flags: %s\n",i,pte,flags);
++      // this PTE points to a lower-level page table.
++      uint64 child = PTE2PA(pte); // 将PTE转为为物理地址
++      vmprint_sub((pagetable_t)child,((uint64)(i)+preva) << 9,level+1); // 递归调用freewalk
++    } else if(pte & PTE_V){
++      printf("||   ||   ||idx: %d: va: %p -> pa: %p, flags: %s\n", i, ((uint64)(i)+preva) << 12, (void*)PTE2PA(pte), flags);
++    }
++  }
++}
++
++void 
++vmprint(pagetable_t pagetable)
++{
++    printf("page table %p\n", pagetable);
++    vmprint_sub(pagetable,0,1);
++}

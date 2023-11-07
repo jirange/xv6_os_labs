@@ -22,6 +22,7 @@ static void freeproc(struct proc *p);
 extern char trampoline[];  // trampoline.S
 
 // initialize the proc table at boot time.
+// 是在系统引导时，用于给进程分配内核栈的物理页并在页表建立映射
 void procinit(void) {
   struct proc *p;
 
@@ -32,11 +33,15 @@ void procinit(void) {
     // Allocate a page for the process's kernel stack.
     // Map it high in memory, followed by an invalid
     // guard page.
-    char *pa = kalloc();
+    char *pa = kalloc(); // 分配一个物理页，返回其首地址
     if (pa == 0) panic("kalloc");
-    uint64 va = KSTACK((int)(p - proc));
-    kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-    p->kstack = va;
+    // uint64 va = KSTACK((int)(p - proc));
+    // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+    // p->kstack = va;
+    //同时还需要保留内核栈在全局页表kernel_pagetable的映射，
+    //然后在Step 4 allocproc()中再把它映射到进程的内核页表里。
+    
+    p->kstack_pa = (uint64)pa; // 将内核栈的物理地址存储于进程控制块
   }
   kvminithart();
 }
@@ -105,11 +110,16 @@ found:
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
+  p->k_pagetable = kvminit_ind();
   if (p->pagetable == 0) {
     freeproc(p);
     release(&p->lock);
     return 0;
   }
+  // 该进程的内核栈 在procinit()中只保留内存的分配，但在allocproc()中完成映射。
+  uint64 va = KSTACK((int) (p - proc));
+  kvmmap_ind(p->k_pagetable, va, (uint64)p->kstack_pa, PGSIZE, PTE_R|PTE_W);
+  p->kstack = va;
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -120,6 +130,37 @@ found:
   return p;
 }
 
+/*释放页表但不释放叶子页表指向的物理页帧
+*因为独立的进程页表的页表项其实指向了共享的物理页
+* 因此释放某个进程的内核页表时，不应该把这个共享物理页帧释放
+* 可参考 freewalk（用于释放整个页表，但要求叶子页表的表项已经被清空）
+*/
+void freeproc_pagetable_without_frame(pagetable_t pagetable){
+    // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; ++i){
+    pte_t pte = pagetable[i];
+    if(pte & PTE_V){
+      pagetable[i] = 0;
+      if ((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        uint64 child = PTE2PA(pte);
+        freeproc_pagetable_without_frame((pagetable_t)child);
+      }
+    }
+  }
+  /*for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      freeproc_pagetable_without_frame((pagetable_t)child);
+      pagetable[i] = 0;               // ？？？？？??????
+    } else if (pte & PTE_V) {
+      panic("freeproc_pagetable_without_frame: leaf");
+    }
+  }*/
+  kfree((void *)pagetable);
+}
+
 // free a proc structure and the data hanging from it,
 // including user pages.
 // p->lock must be held.
@@ -127,6 +168,13 @@ static void freeproc(struct proc *p) {
   if (p->trapframe) kfree((void *)p->trapframe);
   p->trapframe = 0;
   if (p->pagetable) proc_freepagetable(p->pagetable, p->sz);
+  
+  //修改freeproc()函数来释放对应的内核页表
+  //需要找到 释放页表但不释放叶子页表指向的物理页帧 的方法，因为独立的进程页表的页表项其实指向了共享的物理页
+  if(p->k_pagetable)
+  freeproc_pagetable_without_frame(p->k_pagetable);
+  p->k_pagetable = 0;
+
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -430,7 +478,21 @@ void scheduler(void) {
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        /*使得 每个进程都运行在自己的内核独立页表的支持下*/
+        
+
+        // 切换至该进程对应的独立内核页表
+        // 切换页表将其放入寄存器satp中
+          w_satp(MAKE_SATP(p->k_pagetable));// 将内核页表的地址写入 satp 寄存器
+          sfence_vma();// // 刷新 TLB 缓存
+
         swtch(&c->context, &p->context);
+
+        // 这是在进程调用sched手动切换进程后
+        //sched 调用Switch 跳转到schedular中的switch的下一行 也就是这里
+        // 恢复至全局内核页表
+        kvminithart();    /*调度器运行在全局内核页表的支持下*/
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
@@ -469,6 +531,7 @@ void sched(void) {
 
   intena = mycpu()->intena;
   swtch(&p->context, &mycpu()->context);
+  // schedular->sched 返回到switch的下一行 即这里
   mycpu()->intena = intena;
 }
 
